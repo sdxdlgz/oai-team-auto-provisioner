@@ -1,0 +1,24 @@
+[
+  {
+    "_comment": "通过 https://chatgpt.com/api/auth/session 获取授权信息，登录 ChatGPT 后访问此链接",
+    "user": {
+      "id": "user-xxxxxxxxxxxxxxxxxxxxxxxx",
+      "email": "your-email@example.com",
+      "idp": "auth0",
+      "iat": 0,
+      "mfa": false
+    },
+    "expires": "2026-01-01T00:00:00.000Z",
+    "account": {
+      "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "planType": "team",
+      "structure": "workspace",
+      "workspaceType": null,
+      "organizationId": "org-xxxxxxxxxxxxxxxxxxxxxxxx",
+      "isDelinquent": false,
+      "gracePeriodId": null
+    },
+    "accessToken": "eyJhbGciOiJSUzI1NiIs...(your access token)",
+    "authProvider": "openai"
+  }
+]

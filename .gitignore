@@ -8,3 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Sensitive configuration (use config.toml.example as template)
+config.toml
+
+# Data files with sensitive information
+accounts.csv
+team.json
+team_tracker.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul
