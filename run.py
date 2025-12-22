@@ -245,8 +245,7 @@ def process_single_team(team: dict) -> list:
         # 账号之间的间隔
         if i < len(invited_accounts) - 1 and not _shutdown_requested:
             wait_time = random.randint(5, 15)
-            log.info(f"等待 {wait_time}s 后处理下一个账号...", icon="wait")
-            time.sleep(wait_time)
+            log.countdown(wait_time, "等待后处理下一个账号", check_shutdown=lambda: _shutdown_requested)
 
     # ========== Team 处理完成 ==========
     success_count = sum(1 for r in results if r["status"] == "success")

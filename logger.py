@@ -125,6 +125,29 @@ class Logger:
         """清除内联进度"""
         print("\r" + " " * 40 + "\r", end='')
 
+    def countdown(self, seconds: int, msg: str = "等待", check_shutdown=None):
+        """倒计时显示 (同一行动态更新数字)
+        
+        Args:
+            seconds: 倒计时秒数
+            msg: 显示消息
+            check_shutdown: 可选的检查函数，返回 True 时提前退出
+        """
+        import time
+        ts = self._timestamp()
+        icon_str = self.ICONS.get("wait", "⏳")
+        # 先打印固定部分
+        print(f"[{ts}] {icon_str} {msg} ", end='', flush=True)
+        for remaining in range(seconds, 0, -1):
+            if check_shutdown and check_shutdown():
+                print()  # 换行
+                return False
+            # 用 \r 回到数字位置，覆盖更新
+            print(f"\b\b\b\b{remaining:2d}s ", end='', flush=True)
+            time.sleep(1)
+        print()  # 完成后换行
+        return True
+
     def separator(self, char: str = "=", length: int = 60):
         """分隔线"""
         if self.level <= self.LEVEL_INFO:
