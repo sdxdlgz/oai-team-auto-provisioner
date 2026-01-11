@@ -15,12 +15,14 @@
 ## ✨ 功能特性
 
 - 🔄 **全自动化流程** - 从邮箱创建到 CRS 入库一键完成
-- 📧 **批量邮箱创建** - 支持多域名随机生成邮箱
+- 📧 **多邮箱系统支持** - 支持 KYX 自建邮箱和 GPTMail 临时邮箱
 - 👥 **Team 批量邀请** - 一次性邀请多个账号到 Team
 - 🌐 **浏览器自动化** - 基于 DrissionPage 的智能注册
 - 🔐 **OAuth 自动授权** - Codex 授权流程全自动处理
 - 💾 **断点续传** - 支持中断恢复，避免重复操作
 - 📊 **状态追踪** - 详细的账号状态记录与追踪
+- 🌍 **代理轮换** - 支持多代理配置和自动轮换
+- 🎭 **浏览器指纹** - 随机浏览器指纹防检测
 
 ---
 
@@ -59,11 +61,22 @@ cp team.json.example team.json
 #### `config.toml` - 主配置文件
 
 ```toml
-# 邮箱服务配置
+# 邮箱系统选择: "cloudmail" 或 "gptmail"
+email_provider = "cloudmail"
+
+# Cloud Mail 邮箱服务配置 (email_provider = "cloudmail" 时使用)
+# 项目: https://github.com/maillab/cloud-mail
+# API 文档: https://doc.skymail.ink/api/api-doc.html
 [email]
 api_base = "https://your-email-service.com/api/public"
 api_auth = "your-api-auth-token"
 domains = ["domain1.com", "domain2.com"]
+
+# GPTMail 临时邮箱配置 (email_provider = "gptmail" 时使用)
+[gptmail]
+api_base = "https://mail.chatgpt.org.uk"
+api_key = "gpt-test"
+domains = []  # 留空使用默认域名
 
 # CRS 服务配置
 [crs]
@@ -74,6 +87,14 @@ admin_token = "your-admin-token"
 [account]
 default_password = "YourSecurePassword@2025"
 accounts_per_team = 4
+
+# 代理配置 (可选，支持多个代理轮换)
+[[proxies]]
+type = "socks5"
+host = "127.0.0.1"
+port = 1080
+username = ""
+password = ""
 
 # 更多配置项请参考 config.toml.example
 ```
@@ -256,13 +277,27 @@ flowchart TB
 <summary>点击展开 config.toml 完整配置</summary>
 
 ```toml
-# ==================== 邮箱服务配置 ====================
+# ==================== 邮箱系统选择 ====================
+# "cloudmail": Cloud Mail 自建邮箱系统，需要先创建用户才能收信
+# "gptmail": GPTMail 临时邮箱，无需创建用户
+email_provider = "cloudmail"
+
+# ==================== Cloud Mail 邮箱服务配置 ====================
+# 项目地址: https://github.com/maillab/cloud-mail
+# API 文档: https://doc.skymail.ink/api/api-doc.html
 [email]
 api_base = "https://your-email-service.com/api/public"
 api_auth = "your-api-auth-token"
 domains = ["example.com", "example.org"]
 role = "gpt-team"
 web_url = "https://your-email-service.com"
+
+# ==================== GPTMail 临时邮箱配置 ====================
+[gptmail]
+api_base = "https://mail.chatgpt.org.uk"
+api_key = "gpt-test"
+prefix = ""
+domains = []
 
 # ==================== CRS 服务配置 ====================
 [crs]
@@ -299,6 +334,15 @@ max_retries = 20
 wait_timeout = 60
 short_wait = 10
 
+# ==================== 代理配置 ====================
+# 支持多个代理轮换使用
+# [[proxies]]
+# type = "socks5"
+# host = "127.0.0.1"
+# port = 1080
+# username = ""
+# password = ""
+
 # ==================== 文件配置 ====================
 [files]
 csv_file = "accounts.csv"
@@ -313,14 +357,26 @@ tracker_file = "team_tracker.json"
 
 此工具需要配合以下服务使用：
 
-### 📧 邮箱服务 - Cloud Mail
+### 📧 邮箱服务
 
-本项目使用 [**Cloud Mail**](https://github.com/maillab/cloud-mail) 作为临时邮箱服务，用于创建邮箱账号和获取验证码。
+本项目支持两种邮箱服务：
+
+#### 1. Cloud Mail (自建邮箱)
+
+使用 [**Cloud Mail**](https://github.com/maillab/cloud-mail) 作为自建邮箱服务。
 
 - **项目地址**: [https://github.com/maillab/cloud-mail](https://github.com/maillab/cloud-mail)
 - **API 文档**: [https://doc.skymail.ink/api/api-doc.html](https://doc.skymail.ink/api/api-doc.html)
 
-> 💡 **获取 API Token**: 请参考 [API 文档](https://doc.skymail.ink/api/api-doc.html) 了解如何获取 `api_auth` token，然后填入 `config.toml` 的 `[email]` 配置中。
+> 💡 配置 `email_provider = "cloudmail"` 并填写 `[email]` 配置
+
+#### 2. GPTMail (临时邮箱)
+
+使用 GPTMail 临时邮箱服务，无需创建用户即可收信。
+
+- **API 文档**: [https://www.chatgpt.org.uk/2025/11/gptmailapiapi.html](https://www.chatgpt.org.uk/2025/11/gptmailapiapi.html)
+
+> 💡 配置 `email_provider = "gptmail"` 并填写 `[gptmail]` 配置
 
 ### 🔐 CRS 服务 - Claude Relay Service
 

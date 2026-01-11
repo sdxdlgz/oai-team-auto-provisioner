@@ -12,7 +12,11 @@ from config import (
     BROWSER_WAIT_TIMEOUT,
     BROWSER_SHORT_WAIT,
     get_random_name,
-    get_random_birthday
+    get_random_birthday,
+    get_next_proxy,
+    format_proxy_url,
+    PROXIES,
+    PROXY_ENABLED
 )
 from email_service import get_verification_code
 from crs_service import crs_generate_auth_url, crs_exchange_code, crs_add_account, extract_code_from_url
@@ -52,16 +56,26 @@ def cleanup_chrome_processes():
         pass  # 静默处理，不影响主流程
 
 
-def init_browser(max_retries: int = BROWSER_MAX_RETRIES) -> ChromiumPage:
+def init_browser(max_retries: int = BROWSER_MAX_RETRIES, use_proxy: bool = True) -> ChromiumPage:
     """初始化 DrissionPage 浏览器 (带重试机制)
 
     Args:
         max_retries: 最大重试次数
+        use_proxy: 是否使用代理 (默认 True，如果配置了代理则使用)
 
     Returns:
         ChromiumPage: 浏览器实例
     """
     log.info("初始化浏览器...", icon="browser")
+    
+    # 获取代理配置
+    proxy = None
+    proxy_url = None
+    if use_proxy and PROXY_ENABLED and PROXIES:
+        proxy = get_next_proxy()
+        proxy_url = format_proxy_url(proxy)
+        if proxy_url:
+            log.info(f"使用代理: {proxy.get('host')}:{proxy.get('port')}")
     
     last_error = None
     
@@ -80,6 +94,11 @@ def init_browser(max_retries: int = BROWSER_MAX_RETRIES) -> ChromiumPage:
             co.set_argument('--disable-gpu')  # 减少资源占用
             co.set_argument('--disable-dev-shm-usage')  # 避免共享内存问题
             co.auto_port()  # 自动分配端口，确保每次都是新实例
+            
+            # 设置代理
+            if proxy_url:
+                co.set_proxy(proxy_url)
+                log.step(f"代理已配置: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
             
             # 设置超时
             co.set_timeouts(base=PAGE_LOAD_TIMEOUT, page_load=PAGE_LOAD_TIMEOUT * 2)

@@ -18,7 +18,7 @@ import atexit
 
 from config import TEAMS, ACCOUNTS_PER_TEAM, DEFAULT_PASSWORD
 from email_service import batch_create_emails
-from team_service import batch_invite_to_team, print_team_summary
+from team_service import batch_invite_to_team, print_team_summary, check_available_seats
 from crs_service import crs_add_account
 from browser_automation import register_and_authorize
 from utils import (
@@ -89,8 +89,9 @@ def process_single_team(team: dict) -> list:
     results = []
     team_name = team["name"]
 
-    # 加载追踪记录
-    _tracker = load_team_tracker()
+    # 只在 _tracker 为空时加载，避免覆盖已有的修改
+    if _tracker is None:
+        _tracker = load_team_tracker()
 
     # 先快速检查是否已完成（不调用 API）
     completed_count = 0
@@ -114,8 +115,19 @@ def process_single_team(team: dict) -> list:
     if completed_count > 0:
         log.success(f"已完成 {completed_count} 个账号")
 
+    # ========== 检查可用席位 ==========
+    available_seats = check_available_seats(team)
+    log.info(f"Team 可用席位: {available_seats}")
+
+    if available_seats <= 0:
+        log.warning(f"Team {team_name} 没有可用席位，跳过")
+        return results
+
     # ========== 检查未完成账号 ==========
     incomplete = get_incomplete_accounts(_tracker, team_name)
+
+    # 获取已记录的账号总数
+    existing_count = len(_tracker.get("teams", {}).get(team_name, []))
 
     invited_accounts = []
 
@@ -127,14 +139,26 @@ def process_single_team(team: dict) -> list:
 
         invited_accounts = [{"email": acc["email"], "password": acc.get("password", DEFAULT_PASSWORD)} for acc in incomplete]
         log.info("继续处理未完成账号...", icon="start")
+    elif existing_count >= ACCOUNTS_PER_TEAM:
+        # 已记录的账号数量已达到目标，且都已完成，无需处理
+        log.success(f"已记录 {existing_count} 个账号且全部完成，跳过")
+        return results
     else:
         # 没有未完成账号，需要创建新邮箱
+        # 计算需要创建的数量：取 (目标数-已有数) 和 可用席位 的较小值
+        need_count = min(ACCOUNTS_PER_TEAM - existing_count, available_seats)
+
+        if need_count <= 0:
+            log.warning(f"没有足够的席位创建新账号 (已有: {existing_count}, 目标: {ACCOUNTS_PER_TEAM}, 可用席位: {available_seats})")
+            return results
+
+        log.info(f"已有 {existing_count} 个完成账号，可用席位 {available_seats}，将创建 {need_count} 个")
 
         # ========== 阶段 1: 批量创建邮箱 ==========
-        log.section(f"阶段 1: 批量创建 {ACCOUNTS_PER_TEAM} 个邮箱")
+        log.section(f"阶段 1: 批量创建 {need_count} 个邮箱")
 
         with Timer("邮箱创建"):
-            accounts = batch_create_emails(ACCOUNTS_PER_TEAM)
+            accounts = batch_create_emails(need_count)
 
         if len(accounts) == 0:
             log.error("没有成功创建任何邮箱，跳过此 Team")
@@ -245,7 +269,8 @@ def process_single_team(team: dict) -> list:
         # 账号之间的间隔
         if i < len(invited_accounts) - 1 and not _shutdown_requested:
             wait_time = random.randint(5, 15)
-            log.countdown(wait_time, "等待后处理下一个账号", check_shutdown=lambda: _shutdown_requested)
+            log.info(f"等待 {wait_time}s 后处理下一个账号...", icon="wait")
+            time.sleep(wait_time)
 
     # ========== Team 处理完成 ==========
     success_count = sum(1 for r in results if r["status"] == "success")
@@ -290,8 +315,7 @@ def run_all_teams():
             # Team 之间的间隔
             if i < len(TEAMS) - 1 and not _shutdown_requested:
                 wait_time = 3
-                log.info(f"等待 {wait_time}s 后处理下一个 Team...", icon="wait")
-                time.sleep(wait_time)
+                log.countdown(wait_time, "下一个 Team")
 
     # 打印总结
     print_summary(_current_results)
