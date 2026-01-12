@@ -124,7 +124,7 @@ for i, t in enumerate(_raw_teams):
     })
 
 # 邮箱系统选择
-EMAIL_PROVIDER = _cfg.get("email_provider", "cloudmail")  # "cloudmail" 或 "gptmail"
+EMAIL_PROVIDER = _cfg.get("email_provider", "cloudmail")  # "cloudmail", "gptmail" 或 "moemail"
 
 # Cloud Mail 邮箱系统
 _email = _cfg.get("email", {})
@@ -141,6 +141,12 @@ GPTMAIL_API_BASE = _gptmail.get("api_base", "https://mail.chatgpt.org.uk")
 GPTMAIL_API_KEY = _gptmail.get("api_key", "gpt-test")
 GPTMAIL_PREFIX = _gptmail.get("prefix", "")
 GPTMAIL_DOMAINS = _gptmail.get("domains", [])
+
+# MoeMail 临时邮箱配置
+_moemail = _cfg.get("moemail", {})
+MOEMAIL_API_BASE = _moemail.get("api_base", "")
+MOEMAIL_API_KEY = _moemail.get("api_key", "")
+MOEMAIL_DOMAINS = _moemail.get("domains", [])
 
 
 # ==================== 域名黑名单管理 ====================

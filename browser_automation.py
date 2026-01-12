@@ -16,7 +16,7 @@ from config import (
     get_random_birthday
 )
 from email_service import unified_get_verification_code
-from crs_service import crs_generate_auth_url, crs_exchange_code, crs_add_account, extract_code_from_url
+from oauth_service import OAuthSession, extract_code_from_url, create_codex_token_storage
 from logger import log
 
 
@@ -870,432 +870,490 @@ def register_openai_account(page, email: str, password: str) -> bool:
         return False
 
 
-def perform_codex_authorization(page, email: str, password: str) -> dict:
-    """执行 Codex 授权流程
+def perform_codex_authorization(page, email: str, password: str, oauth_session: OAuthSession = None) -> dict:
+    """执行 Codex 授权流程 (使用本地 OAuth，不依赖 CRS)
 
     Args:
         page: 浏览器实例
         email: 邮箱地址
         password: 密码
+        oauth_session: OAuth 会话 (如果为 None 则自动创建)
 
     Returns:
-        dict: codex_data 或 None
+        dict: codex_token_storage 或 None
     """
     log.info(f"开始 Codex 授权: {email}", icon="code")
 
+    # 创建 OAuth 会话
+    if oauth_session is None:
+        oauth_session = OAuthSession()
+
     # 生成授权 URL
-    auth_url, session_id = crs_generate_auth_url()
-    if not auth_url or not session_id:
-        log.error("无法获取授权 URL")
+    auth_url, state = oauth_session.generate_auth_url()
+    if not auth_url:
+        log.error("无法生成授权 URL")
         return None
 
-    # 打开授权页面
-    log.step("打开授权页面...")
-    log.info(f"[URL] 授权URL: {auth_url}", icon="browser")
-    page.get(auth_url)
-    wait_for_page_stable(page, timeout=5)
-    log_current_url(page, "授权页面加载完成", force=True)
+    # 启动本地回调服务器
+    if not oauth_session.start_callback_server():
+        log.error("无法启动回调服务器")
+        return None
 
     try:
-        # 输入邮箱
-        log.step("输入邮箱...")
-        email_input = wait_for_element(page, 'css:input[type="email"]', timeout=10)
-        if not email_input:
-            email_input = wait_for_element(page, 'css:input[name="email"]', timeout=5)
-        if not email_input:
-            email_input = wait_for_element(page, '#email', timeout=5)
-        type_slowly(page, 'css:input[type="email"], input[name="email"], #email', email, base_delay=0.06)
+        # 打开授权页面
+        log.step("打开授权页面...")
+        log.info(f"[URL] 授权URL: {auth_url}", icon="browser")
+        page.get(auth_url)
+        wait_for_page_stable(page, timeout=5)
+        log_current_url(page, "授权页面加载完成", force=True)
 
-        # 点击继续
-        log.step("点击继续...")
-        continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
-        if continue_btn:
-            old_url = page.url
-            continue_btn.click()
-            wait_for_url_change(page, old_url, timeout=8)
-            log_url_change(page, old_url, "输入邮箱后点击继续")
-
-    except Exception as e:
-        log.warning(f"邮箱输入步骤异常: {e}")
-
-    log_current_url(page, "邮箱步骤完成后")
-
-    try:
-        # 输入密码
-        log.step("输入密码...")
-        password_input = wait_for_element(page, 'css:input[type="password"]', timeout=10)
-        if not password_input:
-            password_input = wait_for_element(page, 'css:input[name="password"]', timeout=5)
-        type_slowly(page, 'css:input[type="password"], input[name="password"]', password, base_delay=0.06)
-
-        # 点击继续
-        log.step("点击继续...")
-        continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
-        if continue_btn:
-            old_url = page.url
-            continue_btn.click()
-            wait_for_url_change(page, old_url, timeout=8)
-            log_url_change(page, old_url, "输入密码后点击继续")
-
-    except Exception as e:
-        log.warning(f"密码输入步骤异常: {e}")
-
-    log_current_url(page, "密码步骤完成后")
-
-    # 等待授权回调
-    max_wait = 45  # 减少等待时间
-    start_time = time.time()
-    code = None
-    progress_shown = False
-    last_url_in_loop = None
-    log.step(f"等待授权回调 (最多 {max_wait}s)...")
-
-    while time.time() - start_time < max_wait:
         try:
-            current_url = page.url
+            # 输入邮箱
+            log.step("输入邮箱...")
+            email_input = wait_for_element(page, 'css:input[type="email"]', timeout=10)
+            if not email_input:
+                email_input = wait_for_element(page, 'css:input[name="email"]', timeout=5)
+            if not email_input:
+                email_input = wait_for_element(page, '#email', timeout=5)
+            type_slowly(page, 'css:input[type="email"], input[name="email"], #email', email, base_delay=0.06)
 
-            # 记录URL变化
-            if current_url != last_url_in_loop:
-                log_current_url(page, "等待回调中")
-                last_url_in_loop = current_url
-
-            # 检查是否到达回调页面
-            if "localhost:1455/auth/callback" in current_url and "code=" in current_url:
-                if progress_shown:
-                    log.progress_clear()
-                log.success("获取到回调 URL")
-                log.info(f"[URL] 回调地址: {current_url}", icon="browser")
-                code = extract_code_from_url(current_url)
-                if code:
-                    log.success("提取授权码成功")
-                    break
-
-            # 尝试点击授权按钮
-            try:
-                buttons = page.eles('css:button[type="submit"]')
-                for btn in buttons:
-                    if btn.states.is_displayed and btn.states.is_enabled:
-                        btn_text = btn.text.lower()
-                        if any(x in btn_text for x in ['allow', 'authorize', 'continue', '授权', '允许', '继续', 'accept']):
-                            if progress_shown:
-                                log.progress_clear()
-                                progress_shown = False
-                            log.step(f"点击按钮: {btn.text}")
-                            btn.click()
-                            time.sleep(1.5)  # 减少等待
-                            break
-            except Exception:
-                pass
-
-            elapsed = int(time.time() - start_time)
-            log.progress_inline(f"[等待中... {elapsed}s]")
-            progress_shown = True
-            time.sleep(1.5)  # 减少轮询间隔
+            # 点击继续
+            log.step("点击继续...")
+            continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
+            if continue_btn:
+                old_url = page.url
+                continue_btn.click()
+                wait_for_url_change(page, old_url, timeout=8)
+                log_url_change(page, old_url, "输入邮箱后点击继续")
 
         except Exception as e:
+            log.warning(f"邮箱输入步骤异常: {e}")
+
+        log_current_url(page, "邮箱步骤完成后")
+
+        try:
+            # 输入密码
+            log.step("输入密码...")
+            password_input = wait_for_element(page, 'css:input[type="password"]', timeout=10)
+            if not password_input:
+                password_input = wait_for_element(page, 'css:input[name="password"]', timeout=5)
+            type_slowly(page, 'css:input[type="password"], input[name="password"]', password, base_delay=0.06)
+
+            # 点击继续
+            log.step("点击继续...")
+            continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
+            if continue_btn:
+                old_url = page.url
+                continue_btn.click()
+                wait_for_url_change(page, old_url, timeout=8)
+                log_url_change(page, old_url, "输入密码后点击继续")
+
+        except Exception as e:
+            log.warning(f"密码输入步骤异常: {e}")
+
+        log_current_url(page, "密码步骤完成后")
+
+        # 等待授权回调
+        max_wait = 45
+        start_time = time.time()
+        code = None
+        progress_shown = False
+        last_url_in_loop = None
+        log.step(f"等待授权回调 (最多 {max_wait}s)...")
+
+        while time.time() - start_time < max_wait:
+            try:
+                current_url = page.url
+
+                # 记录URL变化
+                if current_url != last_url_in_loop:
+                    log_current_url(page, "等待回调中")
+                    last_url_in_loop = current_url
+
+                # 检查是否到达回调页面
+                if "localhost:1455/auth/callback" in current_url and "code=" in current_url:
+                    if progress_shown:
+                        log.progress_clear()
+                    log.success("获取到回调 URL")
+                    log.info(f"[URL] 回调地址: {current_url}", icon="browser")
+                    code = extract_code_from_url(current_url)
+                    if code:
+                        log.success("提取授权码成功")
+                        break
+
+                # 也检查回调服务器是否收到了授权码
+                server_code = oauth_session.get_authorization_code()
+                if server_code:
+                    if progress_shown:
+                        log.progress_clear()
+                    log.success("回调服务器收到授权码")
+                    code = server_code
+                    break
+
+                # 尝试点击授权按钮
+                try:
+                    buttons = page.eles('css:button[type="submit"]')
+                    for btn in buttons:
+                        if btn.states.is_displayed and btn.states.is_enabled:
+                            btn_text = btn.text.lower()
+                            if any(x in btn_text for x in ['allow', 'authorize', 'continue', '授权', '允许', '继续', 'accept']):
+                                if progress_shown:
+                                    log.progress_clear()
+                                    progress_shown = False
+                                log.step(f"点击按钮: {btn.text}")
+                                btn.click()
+                                time.sleep(1.5)
+                                break
+                except Exception:
+                    pass
+
+                elapsed = int(time.time() - start_time)
+                log.progress_inline(f"[等待中... {elapsed}s]")
+                progress_shown = True
+                time.sleep(1.5)
+
+            except Exception as e:
+                if progress_shown:
+                    log.progress_clear()
+                    progress_shown = False
+                log.warning(f"检查异常: {e}")
+                time.sleep(1.5)
+
+        if not code:
             if progress_shown:
                 log.progress_clear()
-                progress_shown = False
-            log.warning(f"检查异常: {e}")
-            time.sleep(1.5)
+            log.warning("授权超时")
+            # 最后检查一次回调服务器
+            code = oauth_session.get_authorization_code()
+            if not code:
+                try:
+                    current_url = page.url
+                    if "code=" in current_url:
+                        code = extract_code_from_url(current_url)
+                except Exception:
+                    pass
 
-    if not code:
-        if progress_shown:
-            log.progress_clear()
-        log.warning("授权超时")
-        try:
-            current_url = page.url
-            if "code=" in current_url:
-                code = extract_code_from_url(current_url)
-        except Exception:
-            pass
+        if not code:
+            log.error("无法获取授权码")
+            return None
 
-    if not code:
-        log.error("无法获取授权码")
-        return None
+        # 交换 tokens (直接向 OpenAI 请求，不经过 CRS)
+        log.step("交换 tokens...")
+        token_data = oauth_session.exchange_code(code)
 
-    # 交换 tokens
-    log.step("交换 tokens...")
-    codex_data = crs_exchange_code(code, session_id)
+        if token_data:
+            log.success("Codex 授权成功")
+            # 创建兼容 CLIProxyAPI 的存储格式
+            codex_storage = create_codex_token_storage(token_data, email)
+            return codex_storage
+        else:
+            log.error("Token 交换失败")
+            return None
 
-    if codex_data:
-        log.success("Codex 授权成功")
-        return codex_data
-    else:
-        log.error("Token 交换失败")
-        return None
+    finally:
+        # 确保停止回调服务器
+        oauth_session.stop_callback_server()
 
 
-def perform_codex_authorization_with_otp(page, email: str) -> dict:
+def perform_codex_authorization_with_otp(page, email: str, oauth_session: OAuthSession = None) -> dict:
     """执行 Codex 授权流程 (使用一次性验证码登录，适用于已注册的 Team Owner)
 
     Args:
         page: 浏览器页面实例
         email: 邮箱地址
+        oauth_session: OAuth 会话 (如果为 None 则自动创建)
 
     Returns:
-        dict: codex_data 或 None
+        dict: codex_token_storage 或 None
     """
     log.info("开始 Codex 授权 (OTP 登录)...", icon="auth")
 
+    # 创建 OAuth 会话
+    if oauth_session is None:
+        oauth_session = OAuthSession()
+
     # 生成授权 URL
-    auth_url, session_id = crs_generate_auth_url()
-    if not auth_url or not session_id:
-        log.error("无法获取授权 URL")
+    auth_url, state = oauth_session.generate_auth_url()
+    if not auth_url:
+        log.error("无法生成授权 URL")
         return None
 
-    # 打开授权页面
-    log.step("打开授权页面...")
-    log.info(f"[URL] 授权URL: {auth_url}", icon="browser")
-    page.get(auth_url)
-    wait_for_page_stable(page, timeout=5)
-    log_current_url(page, "OTP授权页面加载完成", force=True)
+    # 启动本地回调服务器
+    if not oauth_session.start_callback_server():
+        log.error("无法启动回调服务器")
+        return None
 
     try:
-        # 输入邮箱
-        log.step("输入邮箱...")
-        email_input = wait_for_element(page, 'css:input[type="email"]', timeout=10)
-        if not email_input:
-            email_input = wait_for_element(page, 'css:input[name="email"]', timeout=5)
-        type_slowly(page, 'css:input[type="email"], input[name="email"], #email', email, base_delay=0.06)
+        # 打开授权页面
+        log.step("打开授权页面...")
+        log.info(f"[URL] 授权URL: {auth_url}", icon="browser")
+        page.get(auth_url)
+        wait_for_page_stable(page, timeout=5)
+        log_current_url(page, "OTP授权页面加载完成", force=True)
 
-        # 点击继续
-        log.step("点击继续...")
-        continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
-        if continue_btn:
-            old_url = page.url
-            continue_btn.click()
-            wait_for_url_change(page, old_url, timeout=8)
-            log_url_change(page, old_url, "OTP流程-输入邮箱后")
-
-    except Exception as e:
-        log.warning(f"邮箱输入步骤异常: {e}")
-
-    log_current_url(page, "OTP流程-邮箱步骤完成后")
-
-    try:
-        # 检查是否在密码页面，如果是则点击"使用一次性验证码登录"
-        current_url = page.url
-        if "/log-in/password" in current_url or "/password" in current_url:
-            log.step("检测到密码页面，点击使用一次性验证码登录...")
-            otp_btn = wait_for_element(page, 'text=使用一次性验证码登录', timeout=5)
-            if not otp_btn:
-                otp_btn = wait_for_element(page, 'text=Log in with a one-time code', timeout=3)
-            if not otp_btn:
-                # 尝试通过按钮文本查找
-                buttons = page.eles('css:button')
-                for btn in buttons:
-                    btn_text = btn.text.lower()
-                    if '一次性验证码' in btn_text or 'one-time' in btn_text:
-                        otp_btn = btn
-                        break
-            
-            if otp_btn:
-                old_url = page.url
-                otp_btn.click()
-                log.success("已点击一次性验证码登录按钮")
-                wait_for_url_change(page, old_url, timeout=8)
-                log_url_change(page, old_url, "点击OTP按钮后")
-            else:
-                log.warning("未找到一次性验证码登录按钮")
-        else:
-            # 不在密码页面，尝试直接找 OTP 按钮
-            log.step("点击使用一次性验证码登录...")
-            otp_btn = wait_for_element(page, 'css:button[value="passwordless_login_send_otp"]', timeout=10)
-            if not otp_btn:
-                otp_btn = wait_for_element(page, 'css:button._inlinePasswordlessLogin', timeout=5)
-            if not otp_btn:
-                buttons = page.eles('css:button')
-                for btn in buttons:
-                    if '一次性验证码' in btn.text or 'one-time' in btn.text.lower():
-                        otp_btn = btn
-                        break
-
-            if otp_btn:
-                otp_btn.click()
-                log.success("已点击一次性验证码登录按钮")
-                time.sleep(2)
-            else:
-                log.warning("未找到一次性验证码登录按钮，尝试继续...")
-
-    except Exception as e:
-        log.warning(f"点击 OTP 按钮异常: {e}")
-
-    log_current_url(page, "OTP流程-准备获取验证码")
-
-    # 等待并获取验证码
-    log.step("等待验证码邮件...")
-    verification_code, error, email_time = unified_get_verification_code(email)
-
-    if not verification_code:
-        log.warning(f"自动获取验证码失败: {error}")
-        # 手动输入
-        verification_code = input("⚠️ 请手动输入验证码: ").strip()
-        if not verification_code:
-            log.error("未输入验证码")
-            return None
-
-    # 验证码重试循环 (最多重试 3 次)
-    max_code_retries = 3
-    for code_attempt in range(max_code_retries):
         try:
-            # 输入验证码
-            log.step(f"输入验证码: {verification_code}")
-            code_input = wait_for_element(page, 'css:input[name="otp"]', timeout=10)
-            if not code_input:
-                code_input = wait_for_element(page, 'css:input[type="text"]', timeout=5)
-            if not code_input:
-                code_input = wait_for_element(page, 'css:input[autocomplete="one-time-code"]', timeout=5)
+            # 输入邮箱
+            log.step("输入邮箱...")
+            email_input = wait_for_element(page, 'css:input[type="email"]', timeout=10)
+            if not email_input:
+                email_input = wait_for_element(page, 'css:input[name="email"]', timeout=5)
+            type_slowly(page, 'css:input[type="email"], input[name="email"], #email', email, base_delay=0.06)
 
-            if code_input:
-                # 清空并输入验证码
-                try:
-                    code_input.clear()
-                except Exception:
-                    pass
-                type_slowly(page, 'css:input[name="otp"], input[type="text"], input[autocomplete="one-time-code"]', verification_code, base_delay=0.08)
-                log.success("验证码已输入")
-            else:
-                log.error("未找到验证码输入框")
-                return None
-
-            # 点击继续/验证按钮
+            # 点击继续
             log.step("点击继续...")
-            time.sleep(1)
             continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
             if continue_btn:
                 old_url = page.url
                 continue_btn.click()
-                time.sleep(2)
-                
-            # 检查是否出现"代码不正确"错误
-            try:
-                error_text = page.ele('text:代码不正确', timeout=1)
-                if not error_text:
-                    error_text = page.ele('text:incorrect', timeout=1)
-                if not error_text:
-                    error_text = page.ele('text:Invalid code', timeout=1)
-                    
-                if error_text and error_text.states.is_displayed:
-                    if code_attempt < max_code_retries - 1:
-                        log.warning(f"验证码错误，尝试重新获取 ({code_attempt + 1}/{max_code_retries})...")
-                        
-                        # 点击"重新发送电子邮件"
-                        resend_btn = page.ele('text:重新发送电子邮件', timeout=3)
-                        if not resend_btn:
-                            resend_btn = page.ele('text:Resend email', timeout=2)
-                        if not resend_btn:
-                            resend_btn = page.ele('text:resend', timeout=2)
-                        
-                        if resend_btn:
-                            resend_btn.click()
-                            log.info("已点击重新发送，等待新验证码...")
-                            time.sleep(3)
-                            
-                            # 重新获取验证码
-                            verification_code, error, email_time = unified_get_verification_code(email)
-                            if not verification_code:
-                                verification_code = input("   ⚠️ 请手动输入验证码: ").strip()
-                            if verification_code:
-                                continue  # 继续下一次尝试
-                        
-                        log.warning("无法重新发送验证码")
-                    else:
-                        log.error("验证码多次错误，放弃")
-                        return None
+                wait_for_url_change(page, old_url, timeout=8)
+                log_url_change(page, old_url, "OTP流程-输入邮箱后")
+
+        except Exception as e:
+            log.warning(f"邮箱输入步骤异常: {e}")
+
+        log_current_url(page, "OTP流程-邮箱步骤完成后")
+
+        try:
+            # 检查是否在密码页面，如果是则点击"使用一次性验证码登录"
+            current_url = page.url
+            if "/log-in/password" in current_url or "/password" in current_url:
+                log.step("检测到密码页面，点击使用一次性验证码登录...")
+                otp_btn = wait_for_element(page, 'text=使用一次性验证码登录', timeout=5)
+                if not otp_btn:
+                    otp_btn = wait_for_element(page, 'text=Log in with a one-time code', timeout=3)
+                if not otp_btn:
+                    # 尝试通过按钮文本查找
+                    buttons = page.eles('css:button')
+                    for btn in buttons:
+                        btn_text = btn.text.lower()
+                        if '一次性验证码' in btn_text or 'one-time' in btn_text:
+                            otp_btn = btn
+                            break
+
+                if otp_btn:
+                    old_url = page.url
+                    otp_btn.click()
+                    log.success("已点击一次性验证码登录按钮")
+                    wait_for_url_change(page, old_url, timeout=8)
+                    log_url_change(page, old_url, "点击OTP按钮后")
                 else:
-                    # 没有错误，验证码正确，跳出循环
+                    log.warning("未找到一次性验证码登录按钮")
+            else:
+                # 不在密码页面，尝试直接找 OTP 按钮
+                log.step("点击使用一次性验证码登录...")
+                otp_btn = wait_for_element(page, 'css:button[value="passwordless_login_send_otp"]', timeout=10)
+                if not otp_btn:
+                    otp_btn = wait_for_element(page, 'css:button._inlinePasswordlessLogin', timeout=5)
+                if not otp_btn:
+                    buttons = page.eles('css:button')
+                    for btn in buttons:
+                        if '一次性验证码' in btn.text or 'one-time' in btn.text.lower():
+                            otp_btn = btn
+                            break
+
+                if otp_btn:
+                    otp_btn.click()
+                    log.success("已点击一次性验证码登录按钮")
+                    time.sleep(2)
+                else:
+                    log.warning("未找到一次性验证码登录按钮，尝试继续...")
+
+        except Exception as e:
+            log.warning(f"点击 OTP 按钮异常: {e}")
+
+        log_current_url(page, "OTP流程-准备获取验证码")
+
+        # 等待并获取验证码
+        log.step("等待验证码邮件...")
+        verification_code, error, email_time = unified_get_verification_code(email)
+
+        if not verification_code:
+            log.warning(f"自动获取验证码失败: {error}")
+            # 手动输入
+            verification_code = input("⚠️ 请手动输入验证码: ").strip()
+            if not verification_code:
+                log.error("未输入验证码")
+                return None
+
+        # 验证码重试循环 (最多重试 3 次)
+        max_code_retries = 3
+        for code_attempt in range(max_code_retries):
+            try:
+                # 输入验证码
+                log.step(f"输入验证码: {verification_code}")
+                code_input = wait_for_element(page, 'css:input[name="otp"]', timeout=10)
+                if not code_input:
+                    code_input = wait_for_element(page, 'css:input[type="text"]', timeout=5)
+                if not code_input:
+                    code_input = wait_for_element(page, 'css:input[autocomplete="one-time-code"]', timeout=5)
+
+                if code_input:
+                    # 清空并输入验证码
+                    try:
+                        code_input.clear()
+                    except Exception:
+                        pass
+                    type_slowly(page, 'css:input[name="otp"], input[type="text"], input[autocomplete="one-time-code"]', verification_code, base_delay=0.08)
+                    log.success("验证码已输入")
+                else:
+                    log.error("未找到验证码输入框")
+                    return None
+
+                # 点击继续/验证按钮
+                log.step("点击继续...")
+                time.sleep(1)
+                continue_btn = wait_for_element(page, 'css:button[type="submit"]', timeout=5)
+                if continue_btn:
+                    old_url = page.url
+                    continue_btn.click()
+                    time.sleep(2)
+
+                # 检查是否出现"代码不正确"错误
+                try:
+                    error_text = page.ele('text:代码不正确', timeout=1)
+                    if not error_text:
+                        error_text = page.ele('text:incorrect', timeout=1)
+                    if not error_text:
+                        error_text = page.ele('text:Invalid code', timeout=1)
+
+                    if error_text and error_text.states.is_displayed:
+                        if code_attempt < max_code_retries - 1:
+                            log.warning(f"验证码错误，尝试重新获取 ({code_attempt + 1}/{max_code_retries})...")
+
+                            # 点击"重新发送电子邮件"
+                            resend_btn = page.ele('text:重新发送电子邮件', timeout=3)
+                            if not resend_btn:
+                                resend_btn = page.ele('text:Resend email', timeout=2)
+                            if not resend_btn:
+                                resend_btn = page.ele('text:resend', timeout=2)
+
+                            if resend_btn:
+                                resend_btn.click()
+                                log.info("已点击重新发送，等待新验证码...")
+                                time.sleep(3)
+
+                                # 重新获取验证码
+                                verification_code, error, email_time = unified_get_verification_code(email)
+                                if not verification_code:
+                                    verification_code = input("   ⚠️ 请手动输入验证码: ").strip()
+                                if verification_code:
+                                    continue  # 继续下一次尝试
+
+                            log.warning("无法重新发送验证码")
+                        else:
+                            log.error("验证码多次错误，放弃")
+                            return None
+                    else:
+                        # 没有错误，验证码正确，跳出循环
+                        break
+                except Exception:
+                    # 没有检测到错误元素，说明验证码正确，继续
                     break
-            except Exception:
-                # 没有检测到错误元素，说明验证码正确，继续
+
+            except Exception as e:
+                log.warning(f"验证码输入步骤异常: {e}")
                 break
 
-        except Exception as e:
-            log.warning(f"验证码输入步骤异常: {e}")
-            break
+        # 等待授权回调
+        max_wait = 45
+        start_time = time.time()
+        code = None
+        progress_shown = False
+        last_url_in_loop = None
+        log.step(f"等待授权回调 (最多 {max_wait}s)...")
 
-    # 等待授权回调
-    max_wait = 45
-    start_time = time.time()
-    code = None
-    progress_shown = False
-    last_url_in_loop = None
-    log.step(f"等待授权回调 (最多 {max_wait}s)...")
+        while time.time() - start_time < max_wait:
+            try:
+                current_url = page.url
 
-    while time.time() - start_time < max_wait:
-        try:
-            current_url = page.url
+                # 记录URL变化
+                if current_url != last_url_in_loop:
+                    log_current_url(page, "OTP流程-等待回调中")
+                    last_url_in_loop = current_url
 
-            # 记录URL变化
-            if current_url != last_url_in_loop:
-                log_current_url(page, "OTP流程-等待回调中")
-                last_url_in_loop = current_url
+                # 检查是否到达回调页面
+                if "localhost:1455/auth/callback" in current_url and "code=" in current_url:
+                    if progress_shown:
+                        log.progress_clear()
+                    log.success("获取到回调 URL")
+                    log.info(f"[URL] 回调地址: {current_url}", icon="browser")
+                    code = extract_code_from_url(current_url)
+                    if code:
+                        log.success("提取授权码成功")
+                        break
 
-            # 检查是否到达回调页面
-            if "localhost:1455/auth/callback" in current_url and "code=" in current_url:
-                if progress_shown:
-                    log.progress_clear()
-                log.success("获取到回调 URL")
-                log.info(f"[URL] 回调地址: {current_url}", icon="browser")
-                code = extract_code_from_url(current_url)
-                if code:
-                    log.success("提取授权码成功")
+                # 也检查回调服务器是否收到了授权码
+                server_code = oauth_session.get_authorization_code()
+                if server_code:
+                    if progress_shown:
+                        log.progress_clear()
+                    log.success("回调服务器收到授权码")
+                    code = server_code
                     break
 
-            # 尝试点击授权按钮
-            try:
-                buttons = page.eles('css:button[type="submit"]')
-                for btn in buttons:
-                    if btn.states.is_displayed and btn.states.is_enabled:
-                        btn_text = btn.text.lower()
-                        if any(x in btn_text for x in ['allow', 'authorize', 'continue', '授权', '允许', '继续', 'accept']):
-                            if progress_shown:
-                                log.progress_clear()
-                                progress_shown = False
-                            log.step(f"点击按钮: {btn.text}")
-                            btn.click()
-                            time.sleep(1.5)
-                            break
-            except Exception:
-                pass
+                # 尝试点击授权按钮
+                try:
+                    buttons = page.eles('css:button[type="submit"]')
+                    for btn in buttons:
+                        if btn.states.is_displayed and btn.states.is_enabled:
+                            btn_text = btn.text.lower()
+                            if any(x in btn_text for x in ['allow', 'authorize', 'continue', '授权', '允许', '继续', 'accept']):
+                                if progress_shown:
+                                    log.progress_clear()
+                                    progress_shown = False
+                                log.step(f"点击按钮: {btn.text}")
+                                btn.click()
+                                time.sleep(1.5)
+                                break
+                except Exception:
+                    pass
 
-            elapsed = int(time.time() - start_time)
-            log.progress_inline(f"[等待中... {elapsed}s]")
-            progress_shown = True
-            time.sleep(1.5)
+                elapsed = int(time.time() - start_time)
+                log.progress_inline(f"[等待中... {elapsed}s]")
+                progress_shown = True
+                time.sleep(1.5)
 
-        except Exception as e:
+            except Exception as e:
+                if progress_shown:
+                    log.progress_clear()
+                    progress_shown = False
+                log.warning(f"检查异常: {e}")
+                time.sleep(1.5)
+
+        if not code:
             if progress_shown:
                 log.progress_clear()
-                progress_shown = False
-            log.warning(f"检查异常: {e}")
-            time.sleep(1.5)
+            log.warning("授权超时")
+            # 最后检查一次回调服务器
+            code = oauth_session.get_authorization_code()
+            if not code:
+                try:
+                    current_url = page.url
+                    if "code=" in current_url:
+                        code = extract_code_from_url(current_url)
+                except Exception:
+                    pass
 
-    if not code:
-        if progress_shown:
-            log.progress_clear()
-        log.warning("授权超时")
-        try:
-            current_url = page.url
-            if "code=" in current_url:
-                code = extract_code_from_url(current_url)
-        except Exception:
-            pass
+        if not code:
+            log.error("无法获取授权码")
+            return None
 
-    if not code:
-        log.error("无法获取授权码")
-        return None
+        # 交换 tokens (直接向 OpenAI 请求，不经过 CRS)
+        log.step("交换 tokens...")
+        token_data = oauth_session.exchange_code(code)
 
-    # 交换 tokens
-    log.step("交换 tokens...")
-    codex_data = crs_exchange_code(code, session_id)
+        if token_data:
+            log.success("Codex 授权成功 (OTP)")
+            # 创建兼容 CLIProxyAPI 的存储格式
+            codex_storage = create_codex_token_storage(token_data, email)
+            return codex_storage
+        else:
+            log.error("Token 交换失败")
+            return None
 
-    if codex_data:
-        log.success("Codex 授权成功 (OTP)")
-        return codex_data
-    else:
-        log.error("Token 交换失败")
-        return None
+    finally:
+        # 确保停止回调服务器
+        oauth_session.stop_callback_server()
 
 
 def login_and_authorize_with_otp(email: str) -> tuple[bool, dict]:

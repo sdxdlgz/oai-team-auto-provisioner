@@ -6,6 +6,7 @@
 # 邮箱系统选择:
 #   - "cloudmail": Cloud Mail 自建邮箱系统，需要先创建用户才能收信
 #   - "gptmail": GPTMail 临时邮箱系统，无需创建用户，直接生成即可收信
+#   - "moemail": MoeMail 临时邮箱系统，自部署，支持多域名
 email_provider = "cloudmail"
 
 # ---------- Cloud Mail 邮箱系统配置 ----------
@@ -36,6 +37,19 @@ api_key = "gpt-test"
 prefix = ""
 # 可用域名列表，生成邮箱时随机选择 (留空使用默认域名)
 domains = []
+
+# ---------- MoeMail 临时邮箱配置 ----------
+# 仅当 email_provider = "moemail" 时生效
+# 项目地址: https://github.com/beilunyang/moemail
+# 需要自行部署 MoeMail 服务
+[moemail]
+# API 接口地址 (你部署的 MoeMail 服务地址)
+api_base = "https://your-moemail-service.com"
+# API 密钥 (在 MoeMail 管理后台生成)
+api_key = "your-api-key"
+# 可用域名列表，生成邮箱时随机选择
+# 需要在 MoeMail 后台配置好对应的域名
+domains = ["mail1.example.com", "mail2.example.com"]
 
 # ==================== CRS 服务配置 ====================
 # CRS (Central Registration Service) 用于管理注册账号的中心服务

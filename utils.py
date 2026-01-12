@@ -7,8 +7,14 @@ import json
 import time
 from datetime import datetime
 
-from config import CSV_FILE, TEAM_TRACKER_FILE
+from config import CSV_FILE, TEAM_TRACKER_FILE, TEAMS
 from logger import log
+
+# 尝试导入 CRS_INCLUDE_TEAM_OWNERS，如果不存在则默认 False
+try:
+    from config import CRS_INCLUDE_TEAM_OWNERS
+except ImportError:
+    CRS_INCLUDE_TEAM_OWNERS = False
 
 
 def save_to_csv(email: str, password: str, team_name: str = "", status: str = "success", crs_id: str = ""):
@@ -228,3 +234,56 @@ class Timer:
 
     def __exit__(self, *args):
         self.stop()
+
+
+def add_team_owners_to_tracker(tracker: dict, password: str) -> int:
+    """将 team.json 中的 Team Owner 添加到 tracker
+
+    Args:
+        tracker: tracker 字典
+        password: 默认密码
+
+    Returns:
+        int: 添加的 Owner 数量
+    """
+    if not CRS_INCLUDE_TEAM_OWNERS:
+        return 0
+
+    if not TEAMS:
+        return 0
+
+    added_count = 0
+    for team in TEAMS:
+        team_name = team.get("name", "")
+        raw_data = team.get("raw", {})
+        email = raw_data.get("user", {}).get("email", "")
+
+        if not team_name or not email:
+            continue
+
+        existing = False
+        if team_name in tracker.get("teams", {}):
+            for acc in tracker["teams"][team_name]:
+                if acc.get("email") == email:
+                    existing = True
+                    break
+
+        if not existing:
+            if team_name not in tracker["teams"]:
+                tracker["teams"][team_name] = []
+
+            tracker["teams"][team_name].append({
+                "email": email,
+                "password": password,
+                "status": "team_owner",
+                "role": "owner",
+                "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            log.info(f"Team Owner 添加到 tracker: {email} -> {team_name}")
+            added_count += 1
+
+    if added_count > 0:
+        log.info(f"已添加 {added_count} 个 Team Owner 到 tracker")
+
+    return added_count

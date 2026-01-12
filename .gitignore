@@ -17,11 +17,21 @@ accounts.csv
 team.json
 team_tracker.json
 
+# Token output directory
+tokens/
+
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Logs
+logs/
 
 # OS
 .DS_Store

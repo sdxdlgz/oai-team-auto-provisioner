@@ -25,6 +25,9 @@ from config import (
     GPTMAIL_PREFIX,
     GPTMAIL_DOMAINS,
     get_random_gptmail_domain,
+    MOEMAIL_API_BASE,
+    MOEMAIL_API_KEY,
+    MOEMAIL_DOMAINS,
 )
 from logger import log
 
@@ -297,6 +300,183 @@ class GPTMailService:
 gptmail_service = GPTMailService()
 
 
+# ==================== MoeMail 临时邮箱服务 ====================
+class MoeMailService:
+    """MoeMail 临时邮箱服务 (基于 https://github.com/beilunyang/moemail)"""
+
+    def __init__(self, api_base: str = None, api_key: str = None):
+        self.api_base = (api_base or MOEMAIL_API_BASE).rstrip("/")
+        self.api_key = api_key or MOEMAIL_API_KEY
+        self.headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+    def generate_email(self, prefix: str = None, domain: str = None, expiry_time: int = 0) -> tuple[str, str]:
+        """生成临时邮箱地址
+
+        POST /api/emails/generate
+        Body: { "name": "xxx", "domain": "xxx.com", "expiryTime": 0 }
+
+        Args:
+            prefix: 邮箱前缀 (name)
+            domain: 邮箱域名
+            expiry_time: 有效期(毫秒), 可选值: 3600000(1小时), 86400000(1天), 604800000(7天), 0(永久)
+        """
+        url = f"{self.api_base}/api/emails/generate"
+
+        try:
+            payload = {"expiryTime": expiry_time}
+            if prefix:
+                payload["name"] = prefix
+            if domain:
+                payload["domain"] = domain
+
+            response = http_session.post(url, headers=self.headers, json=payload, timeout=REQUEST_TIMEOUT)
+            data = response.json()
+
+            if response.status_code == 200 and data.get("id"):
+                email = data.get("email", "")
+                email_id = data.get("id", "")
+                log.success(f"MoeMail 生成邮箱: {email}")
+                return email, email_id
+            else:
+                error = data.get("error", data.get("message", "Unknown error"))
+                log.error(f"MoeMail 生成邮箱失败: {error}")
+                return None, error
+
+        except Exception as e:
+            log.error(f"MoeMail 生成邮箱异常: {e}")
+            return None, str(e)
+
+    def get_emails(self, email_id: str) -> tuple[list, str]:
+        """获取邮箱的邮件列表
+
+        GET /api/emails/{emailId}
+        """
+        url = f"{self.api_base}/api/emails/{email_id}"
+
+        try:
+            response = http_session.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            data = response.json()
+
+            if response.status_code == 200:
+                messages = data.get("messages", [])
+                return messages, None
+            else:
+                error = data.get("error", data.get("message", "Unknown error"))
+                return [], error
+
+        except Exception as e:
+            log.warning(f"MoeMail 获取邮件列表异常: {e}")
+            return [], str(e)
+
+    def get_email_detail(self, email_id: str, message_id: str) -> tuple[dict, str]:
+        """获取单封邮件详情
+
+        GET /api/emails/{emailId}/{messageId}
+        """
+        url = f"{self.api_base}/api/emails/{email_id}/{message_id}"
+
+        try:
+            response = http_session.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+            data = response.json()
+
+            if response.status_code == 200:
+                return data, None
+            else:
+                error = data.get("error", data.get("message", "Unknown error"))
+                return {}, error
+
+        except Exception as e:
+            log.warning(f"MoeMail 获取邮件详情异常: {e}")
+            return {}, str(e)
+
+    def get_verification_code(self, email_id: str, max_retries: int = None, interval: int = None) -> tuple[str, str, str]:
+        """从邮箱获取验证码 (使用通用轮询重试)
+
+        Args:
+            email_id: MoeMail 返回的邮箱 ID (不是邮箱地址)
+        """
+        log.info(f"MoeMail 等待验证码邮件: {email_id}", icon="email")
+
+        email_time_holder = [None]
+
+        def fetch_emails():
+            messages, error = self.get_emails(email_id)
+            return messages if messages else None
+
+        def check_for_code(messages):
+            for msg in messages:
+                subject = msg.get("subject", "")
+                message_id = msg.get("id", "")
+                email_time_holder[0] = msg.get("createdAt", "")
+
+                # 先从标题提取
+                code = self._extract_code(subject)
+                if code:
+                    return code
+
+                # 如果标题没有，获取邮件详情
+                if message_id:
+                    detail, _ = self.get_email_detail(email_id, message_id)
+                    content = detail.get("text", "") or detail.get("html", "")
+                    code = self._extract_code(content)
+                    if code:
+                        return code
+
+            return None
+
+        result = poll_with_retry(
+            fetch_func=fetch_emails,
+            check_func=check_for_code,
+            max_retries=max_retries,
+            interval=interval,
+            description="MoeMail 获取邮件"
+        )
+
+        if result.success:
+            log.success(f"MoeMail 验证码获取成功: {result.data}")
+            return result.data, None, email_time_holder[0]
+        else:
+            log.error(f"MoeMail 验证码获取失败 ({result.error})")
+            return None, "未能获取验证码", None
+
+    def _extract_code(self, text: str) -> str:
+        """从文本中提取验证码"""
+        if not text:
+            return None
+
+        patterns = [
+            r"代码为\s*(\d{6})",
+            r"code is\s*(\d{6})",
+            r"verification code[:\s]*(\d{6})",
+            r"验证码[：:\s]*(\d{6})",
+            r"(\d{6})",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return None
+
+
+# 全局 MoeMail 服务实例
+moemail_service = MoeMailService()
+
+# MoeMail 邮箱 ID 映射 (email -> email_id)
+_moemail_id_map = {}
+
+
+def get_random_moemail_domain() -> str:
+    """随机获取一个 MoeMail 可用域名"""
+    if MOEMAIL_DOMAINS:
+        return random.choice(MOEMAIL_DOMAINS)
+    return ""
+
+
 # ==================== 原有 Cloud Mail 邮箱服务 ====================
 
 
@@ -454,7 +634,9 @@ def batch_create_emails(count: int = 4) -> list:
 
 def unified_generate_email() -> str:
     """统一生成邮箱地址接口"""
-    if EMAIL_PROVIDER == "gptmail":
+    provider = EMAIL_PROVIDER.lower()
+
+    if provider == "gptmail":
         random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
         prefix = f"{random_str}-oaiteam"
         domain = get_random_gptmail_domain() or None
@@ -463,12 +645,24 @@ def unified_generate_email() -> str:
             return email
         log.warning(f"GPTMail 生成失败，回退到 Cloud Mail: {error}")
 
+    elif provider == "moemail":
+        random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        prefix = f"{random_str}-oaiteam"
+        domain = get_random_moemail_domain() or None
+        email, email_id = moemail_service.generate_email(prefix=prefix, domain=domain)
+        if email and email_id:
+            _moemail_id_map[email] = email_id
+            return email
+        log.warning(f"MoeMail 生成失败，回退到 Cloud Mail: {email_id}")
+
     return generate_random_email()
 
 
 def unified_create_email() -> tuple[str, str]:
     """统一创建邮箱接口"""
-    if EMAIL_PROVIDER == "gptmail":
+    provider = EMAIL_PROVIDER.lower()
+
+    if provider == "gptmail":
         random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
         prefix = f"{random_str}-oaiteam"
         domain = get_random_gptmail_domain() or None
@@ -476,6 +670,16 @@ def unified_create_email() -> tuple[str, str]:
         if email:
             return email, DEFAULT_PASSWORD
         log.warning(f"GPTMail 生成失败，回退到 Cloud Mail: {error}")
+
+    elif provider == "moemail":
+        random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        prefix = f"{random_str}-oaiteam"
+        domain = get_random_moemail_domain() or None
+        email, email_id = moemail_service.generate_email(prefix=prefix, domain=domain)
+        if email and email_id:
+            _moemail_id_map[email] = email_id
+            return email, DEFAULT_PASSWORD
+        log.warning(f"MoeMail 生成失败，回退到 Cloud Mail: {email_id}")
 
     email = generate_random_email()
     success, msg = create_email_user(email, DEFAULT_PASSWORD)
@@ -486,16 +690,37 @@ def unified_create_email() -> tuple[str, str]:
 
 def unified_get_verification_code(email: str, max_retries: int = None, interval: int = None) -> tuple[str, str, str]:
     """统一获取验证码接口"""
-    if EMAIL_PROVIDER == "gptmail":
+    provider = EMAIL_PROVIDER.lower()
+
+    if provider == "gptmail":
         return gptmail_service.get_verification_code(email, max_retries, interval)
+
+    elif provider == "moemail":
+        email_id = _moemail_id_map.get(email)
+        if email_id:
+            return moemail_service.get_verification_code(email_id, max_retries, interval)
+        else:
+            log.error(f"MoeMail 未找到邮箱 ID: {email}")
+            return None, "未找到邮箱 ID", None
 
     return get_verification_code(email, max_retries, interval)
 
 
 def unified_fetch_emails(email: str) -> list:
     """统一获取邮件列表接口"""
-    if EMAIL_PROVIDER == "gptmail":
-        emails, error = gptmail_service.get_emails(email)
+    provider = EMAIL_PROVIDER.lower()
+
+    if provider == "gptmail":
+        emails, _ = gptmail_service.get_emails(email)
         return emails
+
+    elif provider == "moemail":
+        email_id = _moemail_id_map.get(email)
+        if email_id:
+            messages, _ = moemail_service.get_emails(email_id)
+            return messages
+        else:
+            log.warning(f"MoeMail 未找到邮箱 ID: {email}")
+            return []
 
     return fetch_email_content(email)

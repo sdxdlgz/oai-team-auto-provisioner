@@ -22,7 +22,7 @@ from config import (
 )
 from email_service import batch_create_emails, unified_create_email
 from team_service import batch_invite_to_team, print_team_summary, check_available_seats, invite_single_to_team
-from crs_service import crs_add_account, crs_sync_team_owners, add_team_owners_to_tracker
+from oauth_service import save_token_to_file
 from browser_automation import register_and_authorize, login_and_authorize_with_otp, authorize_only
 from utils import (
     save_to_csv,
@@ -34,7 +34,8 @@ from utils import (
     get_incomplete_accounts,
     get_all_incomplete_accounts,
     print_summary,
-    Timer
+    Timer,
+    add_team_owners_to_tracker
 )
 from logger import log
 
@@ -340,21 +341,20 @@ def process_accounts(accounts: list, team_name: str) -> list:
                     update_account_status(_tracker, team_name, email, "authorized")
                     save_team_tracker(_tracker)
 
-                    # 添加到 CRS
-                    log.step("添加到 CRS...")
-                    crs_result = crs_add_account(email, codex_data)
+                    # 保存 Token 到 JSON 文件 (兼容 CLIProxyAPI 格式)
+                    log.step("保存 Token 到文件...")
+                    token_file = save_token_to_file(codex_data)
 
-                    if crs_result:
-                        crs_id = crs_result.get("id", "")
+                    if token_file:
                         result["status"] = "success"
-                        result["crs_id"] = crs_id
+                        result["crs_id"] = token_file  # 用文件路径代替 CRS ID
 
                         update_account_status(_tracker, team_name, email, "crs_added")
                         save_team_tracker(_tracker)
 
                         log.success(f"账号处理完成: {email}")
                     else:
-                        log.warning("CRS 入库失败，但注册和授权成功")
+                        log.warning("Token 保存失败，但注册和授权成功")
                         result["status"] = "partial"
                         update_account_status(_tracker, team_name, email, "partial")
                         save_team_tracker(_tracker)
