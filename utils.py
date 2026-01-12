@@ -12,15 +12,7 @@ from logger import log
 
 
 def save_to_csv(email: str, password: str, team_name: str = "", status: str = "success", crs_id: str = ""):
-    """保存账号信息到 CSV 文件
-
-    Args:
-        email: 邮箱地址
-        password: 密码
-        team_name: Team 名称
-        status: 状态 (success/failed)
-        crs_id: CRS 账号 ID
-    """
+    """保存账号信息到 CSV 文件"""
     file_exists = os.path.exists(CSV_FILE)
 
     with open(CSV_FILE, 'a', newline='', encoding='utf-8') as f:
@@ -42,11 +34,7 @@ def save_to_csv(email: str, password: str, team_name: str = "", status: str = "s
 
 
 def load_team_tracker() -> dict:
-    """加载 Team 追踪记录
-
-    Returns:
-        dict: {"teams": {"team_name": [{"email": "...", "status": "..."}]}}
-    """
+    """加载 Team 追踪记录"""
     if os.path.exists(TEAM_TRACKER_FILE):
         try:
             with open(TEAM_TRACKER_FILE, 'r', encoding='utf-8') as f:
@@ -69,25 +57,16 @@ def save_team_tracker(tracker: dict):
 
 
 def add_account_to_tracker(tracker: dict, team_name: str, email: str, status: str = "invited"):
-    """添加账号到追踪记录
-
-    Args:
-        tracker: 追踪记录
-        team_name: Team 名称
-        email: 邮箱地址
-        status: 状态 (invited/registered/authorized/crs_added)
-    """
+    """添加账号到追踪记录"""
     if team_name not in tracker["teams"]:
         tracker["teams"][team_name] = []
 
-    # 检查是否已存在
     for account in tracker["teams"][team_name]:
         if account["email"] == email:
             account["status"] = status
             account["updated_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             return
 
-    # 添加新记录
     tracker["teams"][team_name].append({
         "email": email,
         "status": status,
@@ -106,6 +85,18 @@ def update_account_status(tracker: dict, team_name: str, email: str, status: str
                 return
 
 
+def remove_account_from_tracker(tracker: dict, team_name: str, email: str) -> bool:
+    """从 tracker 中移除账号"""
+    if team_name in tracker["teams"]:
+        original_len = len(tracker["teams"][team_name])
+        tracker["teams"][team_name] = [
+            acc for acc in tracker["teams"][team_name] 
+            if acc["email"] != email
+        ]
+        return len(tracker["teams"][team_name]) < original_len
+    return False
+
+
 def get_team_account_count(tracker: dict, team_name: str) -> int:
     """获取 Team 已记录的账号数量"""
     if team_name in tracker["teams"]:
@@ -114,35 +105,23 @@ def get_team_account_count(tracker: dict, team_name: str) -> int:
 
 
 def get_incomplete_accounts(tracker: dict, team_name: str) -> list:
-    """获取未完成的账号列表 (非 crs_added 状态)
-
-    Args:
-        tracker: 追踪记录
-        team_name: Team 名称
-
-    Returns:
-        list: [{"email": "...", "status": "...", "password": "..."}]
-    """
+    """获取未完成的账号列表 (非 crs_added 状态)"""
     incomplete = []
     if team_name in tracker.get("teams", {}):
         for account in tracker["teams"][team_name]:
             status = account.get("status", "")
-            # 只要不是 crs_added 都算未完成，需要继续处理
             if status != "crs_added":
                 incomplete.append({
                     "email": account["email"],
                     "status": status,
-                    "password": account.get("password", "")
+                    "password": account.get("password", ""),
+                    "role": account.get("role", "member")
                 })
     return incomplete
 
 
 def get_all_incomplete_accounts(tracker: dict) -> dict:
-    """获取所有 Team 的未完成账号
-
-    Returns:
-        dict: {"team_name": [{"email": "...", "status": "..."}]}
-    """
+    """获取所有 Team 的未完成账号"""
     result = {}
     for team_name in tracker.get("teams", {}):
         incomplete = get_incomplete_accounts(tracker, team_name)
@@ -156,7 +135,6 @@ def add_account_with_password(tracker: dict, team_name: str, email: str, passwor
     if team_name not in tracker["teams"]:
         tracker["teams"][team_name] = []
 
-    # 检查是否已存在
     for account in tracker["teams"][team_name]:
         if account["email"] == email:
             account["status"] = status
@@ -164,22 +142,18 @@ def add_account_with_password(tracker: dict, team_name: str, email: str, passwor
             account["updated_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             return
 
-    # 添加新记录
     tracker["teams"][team_name].append({
         "email": email,
         "password": password,
         "status": status,
+        "role": "member",
         "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
 
 
 def print_summary(results: list):
-    """打印执行摘要
-
-    Args:
-        results: [{"team": "...", "email": "...", "status": "...", "crs_id": "..."}]
-    """
+    """打印执行摘要"""
     log.separator("=", 60)
     log.header("执行摘要")
     log.separator("=", 60)
@@ -191,7 +165,6 @@ def print_summary(results: list):
     log.success(f"成功: {success_count}")
     log.error(f"失败: {failed_count}")
 
-    # 按 Team 分组
     teams = {}
     for r in results:
         team = r.get("team", "Unknown")

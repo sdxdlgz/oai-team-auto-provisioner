@@ -3,6 +3,8 @@ import json
 import random
 import re
 import string
+import sys
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -18,25 +20,91 @@ BASE_DIR = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.toml"
 TEAM_JSON_FILE = BASE_DIR / "team.json"
 
+# ==================== 配置加载日志 ====================
+# 由于 config.py 在 logger.py 之前加载，使用简单的打印函数记录错误
+# 这些错误会在程序启动时显示
+
+_config_errors = []  # 存储配置加载错误，供后续日志记录
+
+
+def _log_config(level: str, source: str, message: str, details: str = None):
+    """记录配置加载日志 (启动时使用)
+
+    Args:
+        level: 日志级别 (INFO/WARNING/ERROR)
+        source: 配置来源
+        message: 消息
+        details: 详细信息
+    """
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    full_msg = f"[{timestamp}] [{level}] 配置 [{source}]: {message}"
+    if details:
+        full_msg += f" - {details}"
+
+    # 打印到控制台
+    if level == "ERROR":
+        print(f"\033[91m{full_msg}\033[0m", file=sys.stderr)
+    elif level == "WARNING":
+        print(f"\033[93m{full_msg}\033[0m", file=sys.stderr)
+    else:
+        print(full_msg)
+
+    # 存储错误信息供后续使用
+    if level in ("ERROR", "WARNING"):
+        _config_errors.append({"level": level, "source": source, "message": message, "details": details})
+
+
+def get_config_errors() -> list:
+    """获取配置加载时的错误列表"""
+    return _config_errors.copy()
+
 
 def _load_toml() -> dict:
-    if not CONFIG_FILE.exists() or tomllib is None:
+    """加载 TOML 配置文件"""
+    if tomllib is None:
+        _log_config("WARNING", "config.toml", "tomllib 未安装", "请安装 tomli: pip install tomli")
         return {}
+
+    if not CONFIG_FILE.exists():
+        _log_config("WARNING", "config.toml", "配置文件不存在", str(CONFIG_FILE))
+        return {}
+
     try:
         with open(CONFIG_FILE, "rb") as f:
-            return tomllib.load(f)
-    except Exception:
+            config = tomllib.load(f)
+            _log_config("INFO", "config.toml", "配置文件加载成功")
+            return config
+    except tomllib.TOMLDecodeError as e:
+        _log_config("ERROR", "config.toml", "TOML 解析错误", str(e))
+        return {}
+    except PermissionError:
+        _log_config("ERROR", "config.toml", "权限不足，无法读取配置文件")
+        return {}
+    except Exception as e:
+        _log_config("ERROR", "config.toml", "加载失败", f"{type(e).__name__}: {e}")
         return {}
 
 
 def _load_teams() -> list:
+    """加载 Team 配置文件"""
     if not TEAM_JSON_FILE.exists():
+        _log_config("WARNING", "team.json", "Team 配置文件不存在", str(TEAM_JSON_FILE))
         return []
+
     try:
         with open(TEAM_JSON_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, list) else [data]
-    except Exception:
+            teams = data if isinstance(data, list) else [data]
+            _log_config("INFO", "team.json", f"加载了 {len(teams)} 个 Team 配置")
+            return teams
+    except json.JSONDecodeError as e:
+        _log_config("ERROR", "team.json", "JSON 解析错误", str(e))
+        return []
+    except PermissionError:
+        _log_config("ERROR", "team.json", "权限不足，无法读取配置文件")
+        return []
+    except Exception as e:
+        _log_config("ERROR", "team.json", "加载失败", f"{type(e).__name__}: {e}")
         return []
 
 
@@ -75,16 +143,77 @@ GPTMAIL_PREFIX = _gptmail.get("prefix", "")
 GPTMAIL_DOMAINS = _gptmail.get("domains", [])
 
 
-def get_random_gptmail_domain() -> str:
-    """随机获取一个 GPTMail 可用域名"""
-    if GPTMAIL_DOMAINS:
-        return random.choice(GPTMAIL_DOMAINS)
+# ==================== 域名黑名单管理 ====================
+BLACKLIST_FILE = BASE_DIR / "domain_blacklist.json"
+_domain_blacklist = set()
+
+
+def _load_blacklist() -> set:
+    """加载域名黑名单"""
+    if not BLACKLIST_FILE.exists():
+        return set()
+    try:
+        with open(BLACKLIST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return set(data.get("domains", []))
+    except Exception:
+        return set()
+
+
+def _save_blacklist():
+    """保存域名黑名单"""
+    try:
+        with open(BLACKLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump({"domains": list(_domain_blacklist)}, f, indent=2)
+    except Exception:
+        pass
+
+
+def add_domain_to_blacklist(domain: str):
+    """将域名加入黑名单"""
+    global _domain_blacklist
+    if domain and domain not in _domain_blacklist:
+        _domain_blacklist.add(domain)
+        _save_blacklist()
+        return True
+    return False
+
+
+def is_domain_blacklisted(domain: str) -> bool:
+    """检查域名是否在黑名单中"""
+    return domain in _domain_blacklist
+
+
+def get_domain_from_email(email: str) -> str:
+    """从邮箱地址提取域名"""
+    if "@" in email:
+        return email.split("@")[1]
     return ""
+
+
+def is_email_blacklisted(email: str) -> bool:
+    """检查邮箱域名是否在黑名单中"""
+    domain = get_domain_from_email(email)
+    return is_domain_blacklisted(domain)
+
+
+# 启动时加载黑名单
+_domain_blacklist = _load_blacklist()
+
+
+def get_random_gptmail_domain() -> str:
+    """随机获取一个 GPTMail 可用域名 (排除黑名单)"""
+    available = [d for d in GPTMAIL_DOMAINS if d not in _domain_blacklist]
+    if available:
+        return random.choice(available)
+    return ""
+
 
 # CRS
 _crs = _cfg.get("crs", {})
 CRS_API_BASE = _crs.get("api_base", "")
 CRS_ADMIN_TOKEN = _crs.get("admin_token", "")
+CRS_INCLUDE_TEAM_OWNERS = _crs.get("include_team_owners", False)
 
 # 账号
 _account = _cfg.get("account", {})
@@ -127,7 +256,6 @@ TEAM_TRACKER_FILE = _files.get("tracker_file", str(BASE_DIR / "team_tracker.json
 
 # 代理
 PROXIES = _cfg.get("proxies", [])
-PROXY_ENABLED = _cfg.get("proxy_enabled", False)  # 默认不开启代理
 _proxy_index = 0
 
 

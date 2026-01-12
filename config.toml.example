@@ -44,6 +44,11 @@ domains = []
 api_base = "https://your-crs-service.com"
 # 管理员令牌，用于调用 CRS 管理接口
 admin_token = "your-admin-token"
+# 是否将 team.json 中的 Team 管理员账号也添加到 CRS
+# 开启后，运行时会自动将 team.json 中的账号同步到 CRS 账号池
+# Team Owner 会使用一次性验证码 (OTP) 登录进行 Codex 授权
+# 注意: 请确保 Team 管理员账号邮箱可以接收验证码
+include_team_owners = false
 
 # ==================== 账号配置 ====================
 [account]
